@@ -44,7 +44,7 @@ function handleSelect(event: Event) {
         {{ hasAgents ? 'Select an agent...' : 'No agents configured' }}
       </option>
       <option v-for="agent in agents" :key="agent" :value="agent">
-        {{ agent }}
+        {{ agent }}{{ configStore.getAgentTransportKind(agent) !== 'stdio' ? ` (${configStore.getAgentTransportKind(agent)})` : '' }}
       </option>
     </select>
     

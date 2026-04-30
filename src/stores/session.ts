@@ -4,9 +4,11 @@ import { ref, computed, watch } from 'vue';
 import { load, Store } from '@tauri-apps/plugin-store';
 import { getVersion } from '@tauri-apps/api/app';
 import { trackEvent, trackError } from '../lib/telemetry';
-import type { SavedSession, ChatMessage, ToolCallInfo, PermissionRequest, SessionMode, SlashCommand, ModelInfo } from '../lib/types';
+import type { SavedSession, ChatMessage, ToolCallInfo, PermissionRequest, SessionMode, SlashCommand, ModelInfo, AgentConfig } from '../lib/types';
+import { getTransportKind } from '../lib/types';
 import { AcpClientBridge, createAcpClient } from '../lib/acp-bridge';
-import { spawnAgent, killAgent, onAgentStderr } from '../lib/tauri';
+import { onAgentStderr } from '../lib/tauri';
+import { useConfigStore } from './config';
 import type { SessionNotification, AuthMethod } from '@agentclientprotocol/sdk';
 
 const STORE_PATH = 'sessions.json';
@@ -267,7 +269,17 @@ export const useSessionStore = defineStore('session', () => {
     isConnecting.value = true;
     connectionAborted = false;
     error.value = null;
-    
+
+    // Look up the agent's transport kind so we know whether to do the
+    // stdio-only startup choreography (spawn → stderr progress) or the
+    // streamlined remote path (just open a network transport).
+    const configStore = useConfigStore();
+    const agentConfig: AgentConfig | undefined = configStore.getAgent(agentName);
+    const transportKind = agentConfig
+      ? getTransportKind(agentConfig)
+      : 'stdio';
+    const isRemote = transportKind !== 'stdio';
+
     // Reset and start progress tracking
     startupPhase.value = 'starting';
     startupLogs.value = [];
@@ -275,32 +287,40 @@ export const useSessionStore = defineStore('session', () => {
     startupTimer = setInterval(() => {
       startupElapsed.value++;
     }, 1000);
-    
+
     try {
-      // Spawn agent process
-      const agentInstance = await spawnAgent(agentName);
-      
-      // Listen for stderr to track startup progress
-      stderrUnlisten = await onAgentStderr((stderr) => {
-        if (stderr.agent_id === agentInstance.id) {
+      if (!agentConfig) {
+        throw new Error(`Agent '${agentName}' not found in config`);
+      }
+
+      if (!isRemote) {
+        // Listen for stderr to track startup progress (only meaningful for
+        // stdio agents). The transport itself is created via the bridge
+        // factory below; we register stderr first so we don't miss early
+        // output, but we filter on agent_id once we know it.
+        stderrUnlisten = await onAgentStderr((stderr) => {
           startupLogs.value.push(stderr.line);
           // Detect phase from output
           const detectedPhase = detectPhase(stderr.line);
           if (detectedPhase) {
             startupPhase.value = detectedPhase;
           }
-        }
-      }) as unknown as () => void;
-      
+        }) as unknown as () => void;
+      } else {
+        // Remote agents have no stderr stream; show a minimal "connecting"
+        // state instead of the multi-phase progress UI.
+        startupPhase.value = 'connecting';
+      }
+
       if (connectionAborted) {
-        await killAgent(agentInstance.id);
         throw new Error('Connection cancelled');
       }
-      
-      startupPhase.value = 'initializing';
-      
-      // Create ACP client bridge
-      acpClient = await createAcpClient(agentInstance);
+
+      startupPhase.value = isRemote ? 'connecting' : 'initializing';
+
+      // Create ACP client bridge — the factory selects stdio / websocket /
+      // http transport based on agentConfig.transport.
+      acpClient = await createAcpClient({ name: agentName, config: agentConfig });
       acpClient.onSessionUpdate = handleSessionUpdate;
       
       // Sync bridge's pendingPermissionRequest to store's pendingPermission
@@ -474,11 +494,17 @@ export const useSessionStore = defineStore('session', () => {
     error.value = null;
 
     try {
-      // Spawn agent process
-      const agentInstance = await spawnAgent(savedSession.agentName);
-      
-      // Create ACP client bridge
-      acpClient = await createAcpClient(agentInstance);
+      const configStore = useConfigStore();
+      const agentConfig: AgentConfig | undefined = configStore.getAgent(savedSession.agentName);
+      if (!agentConfig) {
+        throw new Error(`Agent '${savedSession.agentName}' not found in config`);
+      }
+
+      // Create ACP client bridge (transport selected based on agent config).
+      acpClient = await createAcpClient({
+        name: savedSession.agentName,
+        config: agentConfig,
+      });
       acpClient.onSessionUpdate = handleSessionUpdate;
       
       // Sync bridge's pendingPermissionRequest to store's pendingPermission
