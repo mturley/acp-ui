@@ -42,12 +42,16 @@ export function isStdioConfig(
   return getTransportKind(config) === 'stdio';
 }
 
-/** Type guard: true for websocket / http agents. */
+/** Type guard: true for websocket / http agents with a non-empty URL. */
 export function isRemoteConfig(
   config: AgentConfig
 ): config is AgentConfig & { url: string } {
   const kind = getTransportKind(config);
-  return kind === 'websocket' || kind === 'http';
+  return (
+    (kind === 'websocket' || kind === 'http') &&
+    typeof config.url === 'string' &&
+    config.url.length > 0
+  );
 }
 
 export interface AgentInstance {
