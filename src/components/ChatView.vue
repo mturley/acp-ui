@@ -2,6 +2,7 @@
 import { ref, computed, nextTick, watch } from 'vue';
 import { marked } from 'marked';
 import { useSessionStore } from '../stores/session';
+import { isMobile } from '../lib/platform';
 import ModePicker from './ModePicker.vue';
 import ModelPicker from './ModelPicker.vue';
 import CommandPalette from './CommandPalette.vue';
@@ -12,11 +13,17 @@ const inputText = ref('');
 const messagesContainer = ref<HTMLElement | null>(null);
 const commandPaletteRef = ref<InstanceType<typeof CommandPalette> | null>(null);
 
+// On mobile (iOS/Android) the soft-keyboard's Return key should insert a
+// newline like every other native chat app; submitting is the dedicated
+// Send button. On desktop, Enter still submits and Shift+Enter newlines.
+const submitOnEnter = !isMobile();
+
 // Track expanded thought sections by message id
 const expandedThoughts = ref<Set<string>>(new Set());
 
 const messages = computed(() => sessionStore.messageList);
 const isLoading = computed(() => sessionStore.isLoading);
+const isReconnecting = computed(() => sessionStore.isReconnecting);
 const currentSession = computed(() => sessionStore.currentSession);
 const availableModes = computed(() => sessionStore.availableModes);
 const currentModeId = computed(() => sessionStore.currentModeId);
@@ -68,8 +75,11 @@ function handleKeyDown(event: KeyboardEvent) {
       return;
     }
   }
-  
-  if (event.key === 'Enter' && !event.shiftKey) {
+
+  // Enter-to-send is desktop only. On mobile we let the textarea insert a
+  // newline like every other native chat app and require an explicit tap
+  // on the Send button.
+  if (submitOnEnter && event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
     handleSend();
   }
@@ -238,14 +248,20 @@ function getStatusIcon(status: string): string {
       />
       <textarea
         v-model="inputText"
-        :placeholder="availableCommands.length > 0 ? 'Type your message... (/ for commands)' : 'Type your message...'"
-        :disabled="isLoading"
+        :placeholder="
+          isReconnecting
+            ? 'Reconnecting…'
+            : (availableCommands.length > 0
+                ? 'Type your message... (/ for commands)'
+                : 'Type your message...')
+        "
+        :disabled="isLoading || isReconnecting"
         @keydown="handleKeyDown"
         rows="3"
       />
       <button 
         class="send-btn"
-        :disabled="!inputText.trim() || isLoading"
+        :disabled="!inputText.trim() || isLoading || isReconnecting"
         @click="handleSend"
       >
         Send
@@ -493,6 +509,51 @@ textarea:focus {
 .send-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ---------- Mobile / narrow-viewport tweaks ---------- */
+
+@media (max-width: 800px) {
+  /* Reserve space for the floating mobile hamburger (44px wide, fixed in
+     App.vue) so the mode/model pickers don't sit underneath it. Also push
+     the header below the camera notch / status bar so picker buttons aren't
+     clipped on phones with a hole-punch or notch. */
+  .chat-header {
+    padding-top: calc(1rem + env(safe-area-inset-top, 0px));
+    padding-left: calc(44px + 1rem);
+  }
+
+  /* Agent identity is already shown in the sidebar drawer; on a phone the
+     chat header should belong to mode/model/actions. Hiding the long name
+     also avoids awkward 4-line wraps for names like "Copilot CLI dev tunnel". */
+  .agent-name {
+    display: none;
+  }
+
+  /* Session title is also redundant on mobile (visible in the sidebar
+     SessionList) and otherwise gets crushed to a single character by the
+     mode/model pickers. Reclaim the horizontal space. */
+  .chat-header h2 {
+    display: none;
+  }
+
+  .input-container {
+    /* iOS home-indicator: keep Send button reachable above the gesture area. */
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+    gap: 0.5rem;
+  }
+
+  textarea {
+    /* Avoid iOS auto-zoom on focus when font-size < 16px. */
+    font-size: 16px;
+    min-height: 44px;
+  }
+
+  .send-btn {
+    min-width: 64px;
+    min-height: 44px;
+    padding: 0.5rem 1rem;
+  }
 }
 
 /* Agent Thinking Section */

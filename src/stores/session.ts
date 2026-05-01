@@ -44,6 +44,11 @@ export const useSessionStore = defineStore('session', () => {
   const isConnected = ref(false);
   const isLoading = ref(false);
   const isConnecting = ref(false);
+  // True while a foreground reconnect attempt is in flight. Distinct from
+  // `isConnecting` (which is the multi-phase initial spawn/connect path):
+  // reconnects skip the spawn/stderr-progress UI and just need a small
+  // "Reconnecting…" indicator.
+  const isReconnecting = ref(false);
   const error = ref<string | null>(null);
   const pendingPermission = ref<PermissionRequest | null>(null);
   
@@ -849,6 +854,59 @@ export const useSessionStore = defineStore('session', () => {
     error.value = null;
   }
 
+  /**
+   * Foreground reconnect: when the user returns to the app and we're
+   * disconnected (because the OS froze the WebView, the NAT killed the TCP
+   * connection, or the network changed), silently re-attach to the saved
+   * session if possible.
+   *
+   * Returns `true` if a reconnect was attempted, `false` if there was
+   * nothing to do (no saved session, already connected/connecting, agent
+   * doesn't advertise session-load support, etc.).
+   *
+   * Errors are surfaced via `error.value` exactly like a manual resume
+   * would; the caller doesn't need to handle them.
+   */
+  async function tryReconnect(): Promise<boolean> {
+    // Already connected or already trying — leave it alone.
+    if (isConnected.value || isConnecting.value || isLoading.value) {
+      return false;
+    }
+    // No prior session to reconnect to.
+    const session = currentSession.value;
+    if (!session) {
+      return false;
+    }
+    // Bridge already exists (race with another reconnect in flight).
+    if (acpClient) {
+      return false;
+    }
+    // Agent must support `session/load` for resume to be meaningful;
+    // otherwise we'd just create a fresh session, which is a strictly
+    // user-initiated action.
+    if (!session.supportsLoadSession) {
+      return false;
+    }
+
+    // Clear the stale "Connection lost" banner up-front so the UI shows
+    // an honest "Reconnecting…" state instead of a contradictory red
+    // banner during the attempt. If the reconnect ultimately fails, the
+    // catch below restores a real error message.
+    error.value = null;
+    isReconnecting.value = true;
+    try {
+      await resumeSession(session);
+      return true;
+    } catch (e) {
+      // `resumeSession`'s own catch already wrote `error.value`; nothing
+      // more to do here. Returning true so the caller knows we tried.
+      console.warn('Foreground reconnect failed:', e);
+      return true;
+    } finally {
+      isReconnecting.value = false;
+    }
+  }
+
   return {
     // State
     savedSessions,
@@ -857,6 +915,7 @@ export const useSessionStore = defineStore('session', () => {
     isConnected,
     isLoading,
     isConnecting,
+    isReconnecting,
     error,
     pendingPermission,
     pendingAuthMethods,
@@ -892,6 +951,7 @@ export const useSessionStore = defineStore('session', () => {
     setMode,
     setModel,
     clearError,
+    tryReconnect,
     
     // Expose client for permission handling
     get acpClient() { return acpClient; },

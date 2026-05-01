@@ -1,3 +1,4 @@
+#[cfg(desktop)]
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher, EventKind};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -5,7 +6,11 @@ use indexmap::IndexMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+#[cfg(desktop)]
+use tauri::Emitter;
+use tauri::AppHandle;
+#[cfg(not(desktop))]
+use tauri::Manager;
 
 /// Transport kind for an ACP agent.
 ///
@@ -174,14 +179,17 @@ impl Default for AgentsConfig {
 pub struct ConfigManager {
     config: Arc<RwLock<AgentsConfig>>,
     config_path: PathBuf,
+    /// File watcher is desktop-only. Mobile builds rely on explicit
+    /// `add_agent` / `update_agent` IPC calls (no external editing path).
+    #[cfg(desktop)]
     #[allow(dead_code)]
     watcher: Option<RecommendedWatcher>,
 }
 
 impl ConfigManager {
     pub fn new(app: &AppHandle) -> Result<Self, String> {
-        let config_path = get_config_path()?;
-        
+        let config_path = get_config_path(app)?;
+
         // Create config directory if it doesn't exist
         if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -197,17 +205,28 @@ impl ConfigManager {
         };
 
         let config = Arc::new(RwLock::new(config));
-        let config_clone = Arc::clone(&config);
-        let config_path_clone = config_path.clone();
-        let app_handle = app.clone();
 
-        // Set up file watcher
-        let watcher = setup_watcher(config_clone, config_path_clone, app_handle)?;
+        // Set up file watcher (desktop only — `notify` doesn't have a useful
+        // backend on iOS/Android, and mobile users can't edit the file
+        // outside the app anyway).
+        #[cfg(desktop)]
+        let watcher = {
+            let config_clone = Arc::clone(&config);
+            let config_path_clone = config_path.clone();
+            let app_handle = app.clone();
+            Some(setup_watcher(config_clone, config_path_clone, app_handle)?)
+        };
+        #[cfg(not(desktop))]
+        {
+            // Touch `app` so the parameter isn't reported as unused on mobile.
+            let _ = app;
+        }
 
         Ok(Self {
             config,
             config_path,
-            watcher: Some(watcher),
+            #[cfg(desktop)]
+            watcher,
         })
     }
 
@@ -262,18 +281,25 @@ impl ConfigManager {
     }
 }
 
-fn get_config_path() -> Result<PathBuf, String> {
-    #[cfg(target_os = "windows")]
+fn get_config_path(_app: &AppHandle) -> Result<PathBuf, String> {
+    // On desktop we keep the historical `~/.config/acp-ui/agents.json`
+    // (resp. %APPDATA%\acp-ui, ~/Library/Application Support/acp-ui)
+    // so existing installations don't need to migrate.
+    #[cfg(desktop)]
     {
-        dirs::config_dir()
+        return dirs::config_dir()
             .map(|p| p.join("acp-ui").join("agents.json"))
-            .ok_or_else(|| "Could not find config directory".to_string())
+            .ok_or_else(|| "Could not find config directory".to_string());
     }
-    #[cfg(not(target_os = "windows"))]
+    // On mobile, the only writable per-app location is the sandbox config
+    // dir exposed by Tauri. `dirs::config_dir()` is unreliable there.
+    #[cfg(not(desktop))]
     {
-        dirs::config_dir()
-            .map(|p| p.join("acp-ui").join("agents.json"))
-            .ok_or_else(|| "Could not find config directory".to_string())
+        return _app
+            .path()
+            .app_config_dir()
+            .map_err(|e| format!("Could not resolve app config dir: {}", e))
+            .map(|p| p.join("agents.json"));
     }
 }
 
@@ -287,6 +313,7 @@ fn save_config(path: &PathBuf, config: &AgentsConfig) -> Result<(), String> {
     fs::write(path, content).map_err(|e| e.to_string())
 }
 
+#[cfg(desktop)]
 fn setup_watcher(
     config: Arc<RwLock<AgentsConfig>>,
     config_path: PathBuf,

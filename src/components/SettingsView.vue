@@ -22,8 +22,20 @@ interface AgentRow {
   headers: Record<string, string>;
 }
 
+// True on iOS / Android: hide the stdio option in the form, and filter
+// stdio agents out of the list entirely (they can't run there anyway).
+const mobile = isMobile();
+
 const agents = computed<AgentRow[]>(() => {
-  return Object.entries(configStore.config.agents).map(([name, config]) => ({
+  const entries = Object.entries(configStore.config.agents);
+  // On mobile, hide stdio agents entirely. They can't run there (no
+  // subprocess), and showing them with a disabled Edit button just creates
+  // confusion. The raw entries remain in `agents.json` so a desktop sync
+  // round-trips them losslessly.
+  const filtered = mobile
+    ? entries.filter(([, c]) => getTransportKind(c) !== 'stdio')
+    : entries;
+  return filtered.map(([name, config]) => ({
     name,
     transport: getTransportKind(config),
     command: config.command ?? '',
@@ -33,10 +45,6 @@ const agents = computed<AgentRow[]>(() => {
     headers: config.headers ?? {},
   }));
 });
-
-// True on iOS / Android: hide the stdio option and disable editing of any
-// existing stdio agents (they cannot run there anyway).
-const mobile = isMobile();
 
 // Form state
 const showAddForm = ref(false);

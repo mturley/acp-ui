@@ -158,6 +158,22 @@ if (typeof window !== 'undefined') {
   }
 }
 
+/* On phones the menu's anchored width (`min-width: 240px`) can overflow
+   the viewport when the button sits near a screen edge. Re-anchor to the
+   viewport itself so the menu becomes a full-width sheet that always fits. */
+@media (max-width: 800px) {
+  .dropdown-menu {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 4rem);
+    left: 0.5rem;
+    right: 0.5rem;
+    bottom: auto;
+    min-width: 0;
+    max-width: none;
+    max-height: calc(100vh - 6rem);
+  }
+}
+
 .dropdown-item {
   display: flex;
   align-items: flex-start;

@@ -142,6 +142,15 @@ fn build_agent_config(
         Some(other) => return Err(format!("Unknown transport: {}", other)),
     };
 
+    // Defense in depth: stdio agents can't run on mobile (no subprocess).
+    // The frontend already filters them out, but reject here too so a
+    // malicious renderer or synced config can't smuggle one through the
+    // IPC boundary.
+    #[cfg(not(desktop))]
+    if matches!(transport_kind, AgentTransport::Stdio) {
+        return Err("stdio agents are not supported on this platform".to_string());
+    }
+
     match transport_kind {
         AgentTransport::Stdio => {
             let command = command
@@ -192,7 +201,17 @@ fn build_agent_config(
 
 #[tauri::command]
 fn get_machine_id() -> Result<String, String> {
-    machine_uid::get().map_err(|e| format!("Failed to get machine ID: {}", e))
+    // `machine-uid` is desktop-only (no support for iOS / Android). Telemetry
+    // on mobile falls back to an anonymous id (the frontend handles a failure
+    // here by leaving `machineId = null`).
+    #[cfg(desktop)]
+    {
+        machine_uid::get().map_err(|e| format!("Failed to get machine ID: {}", e))
+    }
+    #[cfg(not(desktop))]
+    {
+        Err("machine id is not available on this platform".to_string())
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

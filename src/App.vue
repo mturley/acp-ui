@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { open } from '@tauri-apps/plugin-dialog';
 import { load } from '@tauri-apps/plugin-store';
 import { useConfigStore } from './stores/config';
 import { useSessionStore } from './stores/session';
 import { initTelemetry } from './lib/telemetry';
+import { isMobile } from './lib/platform';
 import AgentSelector from './components/AgentSelector.vue';
 import SessionList from './components/SessionList.vue';
 import ChatView from './components/ChatView.vue';
@@ -20,10 +21,47 @@ const sessionStore = useSessionStore();
 
 const selectedAgent = ref('');
 const selectedCwd = ref('');
+// On mobile there is no native folder picker (and the cwd refers to a path
+// on the *agent's* machine, not the phone), so we expose a free-text field
+// instead of the picker button.
+const mobile = isMobile();
 const showSidebar = ref(true);
 const showSettings = ref(false);
 const showTrafficMonitor = ref(false);
 const showStartupDetails = ref(false);
+
+// Reactive flag tracking whether the viewport is narrow enough to show the
+// sidebar as a slide-in drawer (mobile / very narrow desktop windows). Used
+// by the template to decide when the backdrop is interactive and by
+// onMounted to default the drawer closed.
+const isNarrowLayout = ref(false);
+let narrowMql: MediaQueryList | null = null;
+function syncNarrowLayout() {
+  if (narrowMql) isNarrowLayout.value = narrowMql.matches;
+}
+
+// Foreground-reconnect plumbing. Mobile OSes freeze the WebView when the
+// app is backgrounded and routers may drop the idle TCP connection while
+// we're away. When the user returns we ask the session store to silently
+// reattach to the last session if we have one.
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleReconnect() {
+  // Coalesce rapid visibility/online flips into a single attempt.
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    // Skip if the browser still thinks we're offline; we'll be re-triggered
+    // by the `online` event when connectivity returns.
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    void sessionStore.tryReconnect();
+  }, 250);
+}
+function handleVisibilityChange() {
+  if (typeof document !== 'undefined' && !document.hidden) scheduleReconnect();
+}
+function handleOnline() {
+  scheduleReconnect();
+}
 
 // Preferences store for persisting user selections
 let prefsStore: Awaited<ReturnType<typeof load>> | null = null;
@@ -31,8 +69,31 @@ let prefsStore: Awaited<ReturnType<typeof load>> | null = null;
 const isConnected = computed(() => sessionStore.isConnected);
 const isLoading = computed(() => sessionStore.isLoading);
 const isConnecting = computed(() => sessionStore.isConnecting);
+const isReconnecting = computed(() => sessionStore.isReconnecting);
 const error = computed(() => sessionStore.error || configStore.error);
 const hasAgents = computed(() => configStore.hasAgents);
+
+// Name of the agent the reconnect banner refers to. Falls back to the
+// generic "agent" if the saved session has no name (shouldn't happen).
+const reconnectingAgentName = computed(
+  () => sessionStore.currentSession?.agentName ?? 'agent'
+);
+
+// True when there is a saved session we *could* reconnect to but the
+// transport is currently down. Surfaces a manual "Reconnect" affordance on
+// the error banner so users don't have to background+foreground the app to
+// trigger the auto path.
+const canManuallyReconnect = computed(
+  () =>
+    !isConnected.value &&
+    !isReconnecting.value &&
+    !isConnecting.value &&
+    !!sessionStore.currentSession?.supportsLoadSession
+);
+
+async function handleManualReconnect() {
+  await sessionStore.tryReconnect();
+}
 
 // Watch for permission requests from session store
 const pendingPermission = computed(() => sessionStore.pendingPermission);
@@ -42,6 +103,16 @@ const pendingAuthMethods = computed(() => sessionStore.pendingAuthMethods);
 const pendingAuthAgentName = computed(() => sessionStore.pendingAuthAgentName);
 
 onMounted(async () => {
+  // Track viewport width so the sidebar can default-collapse into a drawer
+  // on phones / narrow windows. We watch a MediaQueryList rather than
+  // resize for correctness across orientation changes on iOS.
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    narrowMql = window.matchMedia('(max-width: 800px)');
+    syncNarrowLayout();
+    narrowMql.addEventListener('change', syncNarrowLayout);
+    if (isNarrowLayout.value) showSidebar.value = false;
+  }
+
   // Load persisted preferences first
   prefsStore = await load('preferences.json');
   
@@ -57,6 +128,17 @@ onMounted(async () => {
   const savedCwd = await prefsStore.get<string>('lastCwd');
   if (savedCwd) {
     selectedCwd.value = savedCwd;
+  }
+
+  // Hook foreground-reconnect listeners. `pageshow` fires both on initial
+  // navigation and when iOS restores a frozen WebView from the back/forward
+  // cache, so it complements `visibilitychange` on Safari/iOS.
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+  }
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pageshow', scheduleReconnect);
+    window.addEventListener('online', handleOnline);
   }
 });
 
@@ -79,11 +161,34 @@ async function handleSelectFolder() {
   }
 }
 
+/** Persist a typed cwd as the user edits it (mobile field). */
+async function handleCwdInput(event: Event) {
+  const value = (event.target as HTMLInputElement).value;
+  selectedCwd.value = value;
+  if (prefsStore) {
+    await prefsStore.set('lastCwd', value);
+  }
+}
+
 async function handleNewSession() {
   if (!selectedAgent.value) return;
-  
+
+  // ACP requires an absolute working directory; passing '.' is rejected by
+  // most agents. On desktop the folder picker always returns an absolute
+  // path, but on mobile the user types it, so validate up-front and surface
+  // a helpful error rather than letting the agent reject `session/new`.
+  const cwd = selectedCwd.value.trim();
+  if (!cwd) {
+    sessionStore.error = 'Please enter a working directory (absolute path on the agent\u2019s machine).';
+    return;
+  }
+  const isAbsolute = cwd.startsWith('/') || /^[A-Za-z]:[\\/]/.test(cwd);
+  if (!isAbsolute) {
+    sessionStore.error = `Working directory must be an absolute path (got: ${cwd}).`;
+    return;
+  }
+
   try {
-    const cwd = selectedCwd.value || '.';
     await sessionStore.createSession(selectedAgent.value, cwd);
   } catch (e) {
     console.error('Failed to create session:', e);
@@ -131,6 +236,29 @@ function toggleSidebar() {
   showSidebar.value = !showSidebar.value;
 }
 
+/** Close the drawer when the user taps the backdrop on a narrow viewport. */
+function handleBackdropClick() {
+  if (isNarrowLayout.value) showSidebar.value = false;
+}
+
+onBeforeUnmount(() => {
+  if (narrowMql) {
+    narrowMql.removeEventListener('change', syncNarrowLayout);
+    narrowMql = null;
+  }
+  if (typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('pageshow', scheduleReconnect);
+    window.removeEventListener('online', handleOnline);
+  }
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+});
+
 function clearError() {
   sessionStore.clearError();
   configStore.clearError();
@@ -138,9 +266,13 @@ function clearError() {
 </script>
 
 <template>
-  <div class="app-container">
-    <!-- Sidebar -->
-    <aside v-if="showSidebar" class="sidebar">
+  <div class="app-container" :class="{ 'narrow-layout': isNarrowLayout }">
+    <!-- Sidebar (slides in as a drawer on narrow viewports) -->
+    <aside
+      v-show="showSidebar"
+      class="sidebar"
+      :class="{ 'is-drawer': isNarrowLayout }"
+    >
       <div class="sidebar-header">
         <h1>ACP UI</h1>
         <div class="header-actions">
@@ -166,7 +298,8 @@ function clearError() {
           <!-- Working Directory Picker -->
           <div class="cwd-picker">
             <label>Working Directory:</label>
-            <div class="cwd-row">
+            <!-- Desktop: read-only display + folder picker. -->
+            <div v-if="!mobile" class="cwd-row">
               <span class="cwd-path" :title="selectedCwd || 'Current directory'">
                 {{ selectedCwd ? selectedCwd.split(/[\\/]/).pop() : '.' }}
               </span>
@@ -179,6 +312,20 @@ function clearError() {
                 📁
               </button>
             </div>
+            <!-- Mobile: free-text input. The cwd is interpreted by the remote
+                 agent, so the path must exist on the agent's machine. -->
+            <input
+              v-else
+              class="cwd-input"
+              type="text"
+              :value="selectedCwd"
+              @input="handleCwdInput"
+              :disabled="isConnecting || isConnected"
+              placeholder="/absolute/path/on/agent"
+              autocapitalize="none"
+              autocorrect="off"
+              spellcheck="false"
+            />
           </div>
           
           <button 
@@ -221,6 +368,24 @@ function clearError() {
       </div>
     </aside>
     
+    <!-- Backdrop behind the drawer on narrow viewports. Only intercepts
+         taps when the layout is narrow; on desktop it's display:none. -->
+    <div
+      v-show="isNarrowLayout && showSidebar"
+      class="drawer-backdrop"
+      @click="handleBackdropClick"
+    />
+
+    <!-- Mobile hamburger to open the drawer when collapsed. The desktop
+         chevron toggle (`.sidebar-toggle-collapsed`) is hidden on narrow
+         viewports via CSS so we don't show two affordances. -->
+    <button
+      v-show="isNarrowLayout && !showSidebar"
+      class="mobile-hamburger"
+      @click="showSidebar = true"
+      aria-label="Open menu"
+    >☰</button>
+
     <!-- Collapsed sidebar toggle -->
     <button 
       v-if="!showSidebar" 
@@ -233,10 +398,26 @@ function clearError() {
     <!-- Main Content Area -->
     <div class="main-area">
       <main class="main-content">
-        <!-- Error display -->
-        <div v-if="error" class="error-banner">
+        <!-- Reconnect banner takes priority over the error banner: while a
+             reconnect is in progress we don't want a contradictory red
+             "Connection lost" pill. -->
+        <div v-if="isReconnecting" class="reconnect-banner">
+          <span class="reconnect-spinner" aria-hidden="true"></span>
+          <span class="reconnect-text">
+            Reconnecting to <strong>{{ reconnectingAgentName }}</strong>…
+          </span>
+        </div>
+
+        <!-- Error display (suppressed while reconnecting). -->
+        <div v-else-if="error" class="error-banner">
           <span class="error-icon">⚠</span>
           <span class="error-text">{{ error }}</span>
+          <button
+            v-if="canManuallyReconnect"
+            class="error-action"
+            @click="handleManualReconnect"
+            title="Reconnect"
+          >Reconnect</button>
           <button class="error-close" @click="clearError" title="Dismiss">×</button>
         </div>
         
@@ -479,6 +660,22 @@ html, body, #app {
   cursor: not-allowed;
 }
 
+/* Mobile-only free-text cwd input. */
+.cwd-input {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-size: 16px; /* 16px = no iOS auto-zoom */
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.cwd-input:disabled {
+  opacity: 0.5;
+}
+
 .disconnect-btn {
   background: var(--bg-danger);
   color: white;
@@ -557,6 +754,68 @@ html, body, #app {
   background: rgba(204, 0, 0, 0.1);
 }
 
+/* Inline "Reconnect" affordance shown next to a stale error when we have a
+   saved session we could reattach to. */
+.error-action {
+  flex-shrink: 0;
+  padding: 0.25rem 0.6rem;
+  margin-right: 0.25rem;
+  border: 1px solid #c00;
+  border-radius: 4px;
+  background: transparent;
+  color: #c00;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.error-action:hover {
+  background: rgba(204, 0, 0, 0.1);
+}
+
+/* Foreground-reconnect banner. Distinct visual style from the red error
+   banner so users immediately read it as transient progress, not failure. */
+.reconnect-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem 1rem;
+  background: #e0f2fe;
+  color: #0369a1;
+  border-bottom: 1px solid #bae6fd;
+}
+
+.reconnect-text {
+  flex: 1;
+  font-size: 0.9rem;
+}
+
+.reconnect-text strong {
+  font-weight: 600;
+}
+
+.reconnect-spinner {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: reconnect-spin 0.9s linear infinite;
+}
+
+@keyframes reconnect-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-color-scheme: dark) {
+  .reconnect-banner {
+    background: #082f49;
+    color: #7dd3fc;
+    border-bottom-color: #0c4a6e;
+  }
+}
+
 .welcome-screen {
   flex: 1;
   display: flex;
@@ -577,5 +836,89 @@ html, body, #app {
   margin-top: 1rem;
   font-size: 0.875rem;
   color: var(--text-muted);
+}
+
+/* ---------- Mobile / narrow-viewport layout ---------- */
+
+.drawer-backdrop {
+  display: none;
+}
+
+.mobile-hamburger {
+  display: none;
+}
+
+@media (max-width: 800px) {
+  .app-container {
+    /* Prevent the off-screen drawer from causing horizontal scroll. */
+    overflow-x: hidden;
+  }
+
+  /* Banners sit at the very top of the main area, where the OS status bar
+     / camera notch overlap on phones. Extend the banner colour through the
+     safe-area inset and push the text below it so the status bar reads as
+     a tinted continuation of the banner instead of clipping its content. */
+  .reconnect-banner,
+  .error-banner {
+    padding-top: calc(0.75rem + env(safe-area-inset-top, 0px));
+  }
+
+  .sidebar.is-drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 85vw;
+    max-width: 360px;
+    z-index: 100;
+    box-shadow: 2px 0 16px rgba(0, 0, 0, 0.3);
+    /* Honour iOS notch / Android status bar. */
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  .drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 90;
+  }
+
+  /* Hide the desktop chevron when the mobile hamburger is in play. */
+  .sidebar-toggle-collapsed {
+    display: none;
+  }
+
+  .mobile-hamburger {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 0.5rem);
+    left: 0.5rem;
+    z-index: 50;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    font-size: 1.25rem;
+    cursor: pointer;
+    color: var(--text-primary);
+  }
+
+  /* Tap-target sizing for the icon buttons inside the sidebar header. */
+  .settings-btn,
+  .toggle-btn {
+    min-width: 40px;
+    min-height: 40px;
+    font-size: 1rem;
+  }
+
+  /* Honour the iOS home indicator at the bottom of the main area. */
+  .main-area {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
 }
 </style>
