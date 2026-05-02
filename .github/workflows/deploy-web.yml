@@ -3,9 +3,11 @@ name: Deploy Web
 # Build the static web app and publish it to the `acp-ui/acp-ui.github.io`
 # repository, which GitHub Pages serves at https://acp-ui.github.io/.
 #
-# Auth: SSH deploy key. The private key lives as a secret in this repo
-# (PAGES_DEPLOY_KEY); the matching public key is registered as a deploy
-# key with write access on `acp-ui/acp-ui.github.io`.
+# Auth: fine-grained PAT (PAGES_PUSH_TOKEN). The PAT is scoped to a single
+# repository (acp-ui/acp-ui.github.io) with `Contents: Read and write` and
+# no other permissions. Pushes happen over HTTPS, which is simpler than
+# SSH on the runner and avoids the silent SSH handshake hang we saw with
+# deploy keys.
 
 on:
   push:
@@ -55,7 +57,7 @@ jobs:
       - name: Deploy to acp-ui.github.io
         uses: peaceiris/actions-gh-pages@v4
         with:
-          deploy_key: ${{ secrets.PAGES_DEPLOY_KEY }}
+          personal_token: ${{ secrets.PAGES_PUSH_TOKEN }}
           external_repository: acp-ui/acp-ui.github.io
           publish_branch: main
           publish_dir: ./dist-web
