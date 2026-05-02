@@ -1,0 +1,67 @@
+name: Deploy Web
+
+# Build the static web app and publish it to the `acp-ui/acp-ui.github.io`
+# repository, which GitHub Pages serves at https://acp-ui.github.io/.
+#
+# Auth: SSH deploy key. The private key lives as a secret in this repo
+# (PAGES_DEPLOY_KEY); the matching public key is registered as a deploy
+# key with write access on `acp-ui/acp-ui.github.io`.
+
+on:
+  push:
+    branches:
+      - main
+    # Only rebuild when something that affects the web bundle changes.
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'index.html'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'tsconfig.node.json'
+      - 'vite.config.ts'
+      - '.github/workflows/deploy-web.yml'
+  # Allow re-deploying without a code change (e.g. after rotating the key
+  # or reconfiguring the Pages repo).
+  workflow_dispatch:
+
+# Avoid concurrent deploys racing each other; the latest commit wins.
+concurrency:
+  group: deploy-web
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web bundle
+        run: npm run build:web
+
+      - name: Deploy to acp-ui.github.io
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          deploy_key: ${{ secrets.PAGES_DEPLOY_KEY }}
+          external_repository: acp-ui/acp-ui.github.io
+          publish_branch: main
+          publish_dir: ./dist-web
+          # Keep the artifact repo's history one-commit shallow — the
+          # source of truth is this repo, not the deployed bundle.
+          force_orphan: true
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
+          commit_message: 'deploy: ${{ github.repository }}@${{ github.sha }}'
