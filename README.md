@@ -1,5 +1,7 @@
 # ACP UI
 
+> **Fork notice:** This is a fork of [formulahendry/acp-ui](https://github.com/formulahendry/acp-ui) with additions for embedding ACP UI inside [acp-web-relay](https://github.com/mturley/acp-web-relay). Changes include URL parameter support (`?session=`, `?agent=`, `?hideSidebar=true`) so the relay can control session loading and hide the sidebar when ACP UI is rendered in an iframe.
+
 <a href="https://apps.microsoft.com/detail/9P76NGS1VF2L?referrer=appbadge&mode=full" target="_blank"  rel="noopener noreferrer">
 	<img src="https://get.microsoft.com/images/en-us%20dark.svg" width="200"/>
 </a>
