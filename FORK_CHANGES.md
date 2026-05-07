@@ -47,11 +47,18 @@ Removed Azure Application Insights telemetry tracking. The upstream project send
 - `session.ts` — removed all `trackEvent`/`trackError` calls
 - `package.json` — removed `@microsoft/applicationinsights-web` dependency
 
+## External Permission Resolution
+
+**File:** `src/lib/acp-bridge.ts`
+
+When ACP UI is embedded in acp-web-relay, permission requests from the agent are shown in both the editor and the web UI. If the editor approves the permission, the relay broadcasts the response to web clients. This change detects that broadcast response and dismisses the permission dialog automatically, so the user doesn't see a stale prompt after another client already approved it.
+
 ## Files Modified
 
 | File | Change |
 |------|--------|
 | `src/App.vue` | Added `sidebarHidden` ref, URL parameter parsing in `onMounted()`, conditional `v-show` on sidebar toggle buttons; removed telemetry init |
+| `src/lib/acp-bridge.ts` | Dismiss permission dialog when another client's approval response is received |
 | `src/lib/telemetry.ts` | Replaced Azure Application Insights with no-op stubs |
 | `src/stores/session.ts` | Removed telemetry tracking calls |
 | `package.json` | Removed `@microsoft/applicationinsights-web` dependency |

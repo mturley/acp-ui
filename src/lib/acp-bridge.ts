@@ -65,6 +65,7 @@ export class AcpClientBridge implements Client {
   // Permission request handling
   public pendingPermissionRequest: Ref<LocalPermissionRequest | null> = ref(null);
   private permissionResolver: PermissionResolver | null = null;
+  private pendingPermissionRequestId: number | string | null = null;
 
   // Session update callback
   public onSessionUpdate: ((notification: SessionNotification) => void) | null = null;
@@ -154,6 +155,12 @@ export class AcpClientBridge implements Client {
         });
         this.pendingMethods.delete(parsed.id);
 
+        if (this.pendingPermissionRequestId !== null && parsed.id === this.pendingPermissionRequestId) {
+          const outcome = (parsed.result as any)?.outcome;
+          const optionId = outcome?.optionId ?? outcome?.outcome ?? 'allow';
+          this.resolvePermission(optionId);
+        }
+
         const resolver = this.messageResolvers.get(parsed.id);
         const rejecter = this.messageRejecters.get(parsed.id);
         if (resolver && rejecter) {
@@ -218,7 +225,9 @@ export class AcpClientBridge implements Client {
           }
           break;
         case 'session/request_permission':
+          this.pendingPermissionRequestId = id;
           result = await this.requestPermission(params as RequestPermissionRequest);
+          this.pendingPermissionRequestId = null;
           break;
         default:
           error = { code: JSONRPC_METHOD_NOT_FOUND, message: `Method not found: ${method}` };
