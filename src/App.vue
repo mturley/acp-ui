@@ -24,6 +24,7 @@ const selectedCwd = ref('');
 // free-text field instead of the picker button.
 const folderPickerAvailable = canPickFolder();
 const showSidebar = ref(true);
+const sidebarHidden = ref(false);
 const showSettings = ref(false);
 const showTrafficMonitor = ref(false);
 const showStartupDetails = ref(false);
@@ -137,6 +138,34 @@ onMounted(async () => {
   if (typeof window !== 'undefined') {
     window.addEventListener('pageshow', scheduleReconnect);
     window.addEventListener('online', handleOnline);
+  }
+
+  // URL parameter support for embedding (e.g. acp-web-relay iframe).
+  // ?hideSidebar=true — permanently hide the sidebar and all toggle buttons
+  // ?agent=<name> — auto-select an agent by name
+  // ?session=<id> — auto-resume a saved session by its sessionId
+  if (typeof window !== 'undefined') {
+    const params = new URLSearchParams(window.location.search);
+
+    if (params.get('hideSidebar') === 'true') {
+      sidebarHidden.value = true;
+      showSidebar.value = false;
+    }
+
+    const agentParam = params.get('agent');
+    if (agentParam && configStore.agentNames.includes(agentParam)) {
+      selectedAgent.value = agentParam;
+    }
+
+    const sessionParam = params.get('session');
+    if (sessionParam) {
+      const saved = sessionStore.savedSessions.find(
+        (s: SavedSession) => s.sessionId === sessionParam,
+      );
+      if (saved) {
+        handleResumeSession(saved);
+      }
+    }
   }
 });
 
@@ -377,15 +406,15 @@ function clearError() {
          chevron toggle (`.sidebar-toggle-collapsed`) is hidden on narrow
          viewports via CSS so we don't show two affordances. -->
     <button
-      v-show="isNarrowLayout && !showSidebar"
+      v-show="!sidebarHidden && isNarrowLayout && !showSidebar"
       class="mobile-hamburger"
       @click="showSidebar = true"
       aria-label="Open menu"
     >☰</button>
 
     <!-- Collapsed sidebar toggle -->
-    <button 
-      v-if="!showSidebar" 
+    <button
+      v-if="!sidebarHidden && !showSidebar"
       class="sidebar-toggle-collapsed"
       @click="toggleSidebar"
     >
