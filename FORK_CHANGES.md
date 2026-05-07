@@ -36,9 +36,23 @@ acp-web-relay is a transparent ACP relay proxy that serves a web UI for monitori
 
 Without these URL parameters, the user would need to manually configure the agent and select a session every time they click a session in the relay's picker.
 
+## Azure Application Insights Removal
+
+**Files:** `src/lib/telemetry.ts`, `src/App.vue`, `src/stores/session.ts`, `package.json`
+
+Removed Azure Application Insights telemetry tracking. The upstream project sends analytics to Microsoft's `applicationinsights.azure.com` endpoint, which causes CORS errors when ACP UI is served from a different origin (as it is in acp-web-relay's iframe). Since we don't use this telemetry, the entire SDK was removed:
+
+- `telemetry.ts` — replaced with no-op stub functions (preserving the export API so any other imports don't break)
+- `App.vue` — removed `initTelemetry` import and initialization call
+- `session.ts` — removed all `trackEvent`/`trackError` calls
+- `package.json` — removed `@microsoft/applicationinsights-web` dependency
+
 ## Files Modified
 
 | File | Change |
 |------|--------|
-| `src/App.vue` | Added `sidebarHidden` ref, URL parameter parsing in `onMounted()`, conditional `v-show` on sidebar toggle buttons |
+| `src/App.vue` | Added `sidebarHidden` ref, URL parameter parsing in `onMounted()`, conditional `v-show` on sidebar toggle buttons; removed telemetry init |
+| `src/lib/telemetry.ts` | Replaced Azure Application Insights with no-op stubs |
+| `src/stores/session.ts` | Removed telemetry tracking calls |
+| `package.json` | Removed `@microsoft/applicationinsights-web` dependency |
 | `README.md` | Added fork notice at the top |
