@@ -61,14 +61,16 @@ Added dark mode styles for the permission dialog. The dialog used CSS variables 
 
 **Fix:** Added a `@media (prefers-color-scheme: dark)` block with explicit dark background colors for `.permission-dialog`, `.dialog-header`, `.dialog-content`, `.tool-title`, `.dialog-actions`, and `.cancel-btn`, matching the palette used elsewhere in App.vue's dark mode.
 
-## Files Modified
+## Files Modified and Rebase Conflict Guide
 
-| File | Change |
-|------|--------|
-| `src/App.vue` | Added `sidebarHidden` ref, URL parameter parsing in `onMounted()`, conditional `v-show` on sidebar toggle buttons; removed telemetry init |
-| `src/components/PermissionDialog.vue` | Added dark mode styles to fix unreadable light-on-light text |
-| `src/lib/acp-bridge.ts` | Dismiss permission dialog when another client's approval response is received |
-| `src/lib/telemetry.ts` | Replaced Azure Application Insights with no-op stubs |
-| `src/stores/session.ts` | Removed telemetry tracking calls |
-| `package.json` | Removed `@microsoft/applicationinsights-web` dependency |
-| `README.md` | Added fork notice at the top |
+When rebasing onto a new upstream version, conflicts are likely in files this fork modifies. The table below summarizes each file, what the fork changed, and how to handle conflicts during rebase. The general strategy is to keep fork modifications intact while accepting upstream changes to other parts of the same file. When in doubt, ask the user.
+
+| File | Fork Change | Conflict Likelihood | Resolution Strategy |
+|------|-------------|--------------------|--------------------|
+| `src/App.vue` | URL param parsing, sidebar hiding, telemetry removal | **High** — main app file, upstream changes it frequently | Keep fork's `onMounted()` additions and `v-show` bindings; accept upstream changes elsewhere in the file |
+| `src/components/PermissionDialog.vue` | Dark mode styles | **Low** | Keep fork's `@media (prefers-color-scheme: dark)` block; accept upstream structural changes |
+| `src/lib/acp-bridge.ts` | Permission dialog dismissal on external approval | **Medium** | Keep fork's response-detection logic; accept upstream changes to other parts of the bridge |
+| `src/lib/telemetry.ts` | No-op stubs replacing Azure SDK | **Low** — upstream unlikely to touch this | Keep fork's no-op stubs; if upstream adds new telemetry functions, add matching no-op stubs |
+| `src/stores/session.ts` | Removed telemetry calls | **Medium** | Keep telemetry calls removed; if upstream adds new telemetry calls, remove them too |
+| `package.json` | Removed `@microsoft/applicationinsights-web` | **Medium** — upstream dep changes | Keep the dependency removed; accept other upstream dependency changes |
+| `README.md` | Fork notice at top | **Low** | Keep fork notice; accept upstream README changes below it |
