@@ -196,4 +196,38 @@ function handleCancel() {
 .cancel-btn:hover {
   background: var(--bg-hover, #f0f0f0);
 }
+
+@media (prefers-color-scheme: dark) {
+  .permission-dialog {
+    background: #2d2d2d;
+  }
+
+  .dialog-header {
+    background: #252525;
+    border-bottom-color: #404040;
+  }
+
+  .dialog-content {
+    color: #e0e0e0;
+  }
+
+  .tool-title {
+    color: #e0e0e0;
+  }
+
+  .dialog-actions {
+    background: #252525;
+    border-top-color: #404040;
+  }
+
+  .cancel-btn {
+    background: #333;
+    color: #e0e0e0;
+    border-color: #555;
+  }
+
+  .cancel-btn:hover {
+    background: #444;
+  }
+}
 </style>
